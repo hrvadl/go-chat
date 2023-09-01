@@ -14,8 +14,5 @@ func main() {
 		log.Fatalf("cannot connect to the server on port %v: %v", server.Port, err)
 	}
 
-	go client.ReceiveMessage()
-	go client.SendMessage()
-
-	<-client.Done
+	client.StartMessaging()
 }

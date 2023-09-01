@@ -5,13 +5,14 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 
 	"github.com/hrvadl/go-chat/server/pkg/server"
 )
 
 type Client struct {
 	conn net.Conn
-	Done chan struct{}
+	wg   sync.WaitGroup
 }
 
 func NewClient() (*Client, error) {
@@ -21,15 +22,14 @@ func NewClient() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{conn: conn, Done: make(chan struct{})}, nil
+	return &Client{conn: conn, wg: sync.WaitGroup{}}, nil
 }
 
 func (c *Client) ReceiveMessage() {
 	for _, err := io.Copy(os.Stdout, c.conn); err != nil; {
-
 	}
 
-	c.Leave()
+	c.wg.Done()
 }
 
 func (c *Client) SendMessage() {
@@ -38,8 +38,13 @@ func (c *Client) SendMessage() {
 	for scanner.Scan() {
 		c.conn.Write(scanner.Bytes())
 	}
+
+	c.wg.Done()
 }
 
-func (c *Client) Leave() {
-	c.Done <- struct{}{}
+func (c *Client) StartMessaging() {
+	c.wg.Add(2)
+	go c.ReceiveMessage()
+	go c.SendMessage()
+	c.wg.Wait()
 }
