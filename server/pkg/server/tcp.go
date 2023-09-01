@@ -1,124 +1,124 @@
 package server
 
 import (
-	"bytes"
-	"errors"
-	"io"
 	"log"
 	"net"
+
+	"github.com/hrvadl/go-chat/server/pkg/connection"
+	"github.com/hrvadl/go-chat/server/pkg/messages"
 )
 
-const protocol = "tcp"
+const (
+	Port     = ":5000"
+	MaxConn  = 10
+	Protocol = "tcp"
+)
 
-type Connection struct {
-	net.Conn
-	nickname string
+type TCP struct {
+	port        string
+	maxConn     int
+	connections connection.ParticipantMap
+	listener    net.Listener
+	message     chan *messages.Message
+	done        chan struct{}
 }
 
 func NewTCP(port string, maxConn int) *TCP {
 	return &TCP{
 		port:        port,
 		maxConn:     maxConn,
-		connections: map[string]Connection{},
+		connections: *connection.NewParticipantMap(),
+		message:     make(chan *messages.Message),
 	}
 }
 
-type TCP struct {
-	port        string
-	maxConn     int
-	connections map[string]Connection
-	listener    net.Listener
-}
-
-func (s *TCP) Listen() error {
-	listener, err := net.Listen(protocol, s.port)
+func (s *TCP) Listen() {
+	listener, err := net.Listen(Protocol, s.port)
 
 	if err != nil {
-		return err
+		log.Fatalf("Error listening on %v: %v", s.port, err)
 	}
 
 	s.listener = listener
 
 	for {
-		conn, err := s.AcceptConnection()
+		participant, err := s.AcceptParticipant()
+
+		if err != nil {
+			continue
+		}
 
 		go func() {
-			defer conn.Close()
-			s.connections[conn.nickname] = *conn
-
-			if err != nil {
-				conn.Write([]byte(err.Error()))
-				return
-			}
-
-			s.StartChatting(conn)
+			s.connections.Store(participant.Address, participant)
+			s.ListenToMessages(participant)
 		}()
 	}
 }
 
-func (s *TCP) AcceptConnection() (*Connection, error) {
+func (s *TCP) AcceptParticipant() (*connection.Participant, error) {
 	conn, err := s.listener.Accept()
 
 	if err != nil {
-		log.Fatalf("error accepting connection %v \n", err)
-	}
-
-	conn.Write([]byte("Hi, please write your nickname. Note: it should be unique\n"))
-
-	var nickname bytes.Buffer
-
-	for {
-		if nickname, err := io.ReadAll(conn); err != nil {
-			conn.Write([]byte(nickname))
-			break
-		}
-	}
-
-	if err := s.validateNickname(nickname.String()); err != nil {
-		conn.Write([]byte(err.Error()))
 		return nil, err
 	}
 
-	newConn := &Connection{
-		nickname: nickname.String(),
-		Conn:     conn,
-	}
-
-	return newConn, nil
-
+	return connection.NewParticipant(conn), nil
 }
 
-func (s *TCP) StartChatting(conn *Connection) {
-	s.sendMessage([]byte("Greeting to our new member - "+conn.nickname), conn)
+func (s *TCP) ListenToMessages(participant *connection.Participant) {
+	defer participant.Leave()
+	s.message <- messages.New([]byte("Greet our new member: "+participant.Address), nil, messages.Joined)
+
 	for {
-		var message []byte
+		buf := make([]byte, 32768)
 
-		if _, err := conn.Read(message); err != nil {
-			conn.Write([]byte("Couldn't read message. Please try again later\n"))
-			return
+		if _, err := participant.Conn.Read(buf); err != nil {
+			break
 		}
 
-		s.sendMessage(message, conn)
+		s.message <- messages.New(buf, participant, messages.Default)
 	}
 }
 
-func (s *TCP) validateNickname(nickname string) error {
-	for _, c := range s.connections {
-		if c.nickname == nickname {
-			return errors.New("Such nickname already exists\n")
+func (s *TCP) BroadCast() {
+	for message := range s.message {
+		switch message.MsgType {
+		case messages.Joined:
+			fallthrough
+		case messages.Left:
+			s.sendToAll(message.Text)
+		case messages.Default:
+			s.send(message.Text, *s.exceptSender(message.Author))
 		}
 	}
-
-	return nil
 }
 
-func (s *TCP) sendMessage(message []byte, sender *Connection) {
-	for _, c := range s.connections {
-		c := c
+func (s *TCP) sendToAll(message []byte) {
+	s.connections.Range(func(key string, p *connection.Participant) {
+		connection := p
 		go func() {
-			if c.nickname != sender.nickname {
-				c.Write(message)
-			}
+			connection.Send(message)
+		}()
+	})
+}
+
+func (s *TCP) send(message []byte, receivers []connection.Participant) {
+	for _, connection := range receivers {
+		connection := connection
+		go func() {
+			connection.Send(message)
 		}()
 	}
+}
+
+func (s *TCP) exceptSender(sender *connection.Participant) *[]connection.Participant {
+	receivers := make([]connection.Participant, 0, s.connections.Length()-1)
+
+	s.connections.Range(func(key string, p *connection.Participant) {
+		if p.Address != sender.Address {
+			receivers = append(receivers, *p)
+		}
+	})
+
+	return &receivers
 }
