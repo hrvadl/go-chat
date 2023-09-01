@@ -41,6 +41,7 @@ func (s *TCP) Listen() {
 	}
 
 	s.listener = listener
+	log.Printf("Listening on %v", s.listener.Addr().String())
 
 	for {
 		participant, err := s.AcceptParticipant()
