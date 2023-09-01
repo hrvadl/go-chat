@@ -34,6 +34,7 @@ func NewTCP(port string, maxConn int) *TCP {
 
 func (s *TCP) Listen() {
 	listener, err := net.Listen(Protocol, s.port)
+	defer listener.Close()
 
 	if err != nil {
 		log.Fatalf("Error listening on %v: %v", s.port, err)
